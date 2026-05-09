@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Backward-compatible entry point for the modular ShadowTrace package."""
 from __future__ import annotations
 
 import asyncio

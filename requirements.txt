@@ -1,0 +1,12 @@
+aiohttp>=3.9,<4
+aiohttp-socks>=0.8
+aiosqlite>=0.19
+beautifulsoup4>=4.12
+colorama>=0.4
+email-validator>=2.1
+imagehash>=4.3
+langdetect>=1.0
+lxml>=5.0
+Pillow>=10.0
+rapidfuzz>=3.0
+rich>=13.7
