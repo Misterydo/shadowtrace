@@ -5,13 +5,36 @@ import re
 
 from bs4 import BeautifulSoup
 
+from shadowtrace.core.models import ModuleCapability, ModuleKind, ModulePriority
 from shadowtrace.modules.base import BaseExtractor
 from shadowtrace.utils.parser import detect_challenge, detect_lang
 
 
 class InstagramExtractor(BaseExtractor):
+    name = "Instagram"
     site_name = "Instagram"
+    description = "Instagram public profile and indirect exposure intelligence"
+    capabilities = (ModuleCapability.SOCIAL_SCRAPING, ModuleCapability.PLATFORM_ENUMERATION, ModuleCapability.PROFILE_CORRELATION, ModuleCapability.METADATA_EXTRACTION)
+    kind = ModuleKind.HYBRID
+    priority = ModulePriority.HIGH
     url_patterns = ("instagram.com",)
+
+    def build_dorks(self, username: str) -> list[str]:
+        return [
+            f'site:instagram.com "{username}"',
+            f'site:instagram.com "{username}" "/p/"',
+            f'site:instagram.com "{username}" "@"',
+            f'site:instagram.com "{username}" "bio"',
+        ]
+
+    async def normalize(self, parsed: dict[str, object], context: object | None = None) -> dict[str, object]:
+        normalized = dict(parsed)
+        bio = str(normalized.get("bio", ""))
+        normalized["external_links"] = re.findall(r"https?://[^\s)]+", bio)
+        normalized["hashtags"] = re.findall(r"#[\w.]+", bio)
+        normalized["mentions"] = re.findall(r"@[\w.]+", bio)
+        normalized["intelligence_surface"] = ["bio", "external_links", "hashtags", "mentions", "indexed_comments"]
+        return normalized
 
     async def extract_metadata(self, html: str) -> dict[str, object]:
         soup = BeautifulSoup(html, "lxml")

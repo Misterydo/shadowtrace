@@ -5,7 +5,7 @@ from pathlib import Path
 from types import ModuleType
 
 from shadowtrace.modules.base import BaseExtractor
-from shadowtrace.modules.registry import register_extractor
+from shadowtrace.modules.registry import register_extractor, register_module
 
 
 def load_plugin_module(path: Path) -> ModuleType:
@@ -17,19 +17,36 @@ def load_plugin_module(path: Path) -> ModuleType:
     return module
 
 
-def discover_plugins(directory: str | Path = "plugins") -> list[str]:
-    plugin_dir = Path(directory)
-    if not plugin_dir.exists():
-        return []
-    loaded: list[str] = []
-    for file_path in sorted(plugin_dir.glob("*.py")):
-        if file_path.name.startswith("_"):
+def _iter_plugin_files(directories: str | Path | list[str | Path]) -> list[Path]:
+    paths = [directories] if isinstance(directories, (str, Path)) else directories
+    files: list[Path] = []
+    for directory in paths:
+        plugin_dir = Path(directory)
+        if not plugin_dir.exists():
             continue
+        files.extend(path for path in sorted(plugin_dir.glob("*.py")) if not path.name.startswith("_"))
+    return files
+
+
+def discover_plugins(directory: str | Path | list[str | Path] = "plugins") -> list[str]:
+    loaded: list[str] = []
+    for file_path in _iter_plugin_files(directory):
         module = load_plugin_module(file_path)
-        extractor = getattr(module, "EXTRACTOR", None)
         site_name = getattr(module, "SITE_NAME", None)
         url_template = getattr(module, "URL_TEMPLATE", None)
-        if isinstance(extractor, BaseExtractor) and isinstance(site_name, str) and isinstance(url_template, str):
-            register_extractor(site_name, url_template, extractor)
-            loaded.append(site_name)
+
+        candidates = []
+        if getattr(module, "MODULE", None) is not None:
+            candidates.append(getattr(module, "MODULE"))
+        if getattr(module, "EXTRACTOR", None) is not None:
+            candidates.append(getattr(module, "EXTRACTOR"))
+        candidates.extend(getattr(module, "MODULES", []))
+
+        for candidate in candidates:
+            if not isinstance(candidate, BaseExtractor):
+                continue
+            name = str(site_name or candidate.module_name)
+            template = str(url_template or getattr(candidate, "url_template", "{}"))
+            register_module(name, template, candidate)
+            loaded.append(name)
     return loaded
