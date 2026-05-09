@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import json
 import re
-
-from bs4 import BeautifulSoup
 
 from shadowtrace.core.models import ModuleCapability, ModuleKind, ModulePriority
 from shadowtrace.modules.base import BaseExtractor
-from shadowtrace.utils.parser import detect_challenge, detect_lang
+from shadowtrace.utils.parser import detect_lang, iter_json_blobs, meta_map, tolerant_soup
 
 
 class InstagramExtractor(BaseExtractor):
@@ -18,6 +15,8 @@ class InstagramExtractor(BaseExtractor):
     kind = ModuleKind.HYBRID
     priority = ModulePriority.HIGH
     url_patterns = ("instagram.com",)
+    positive_patterns = ("profilepage_", "edge_followed_by", "followers", "following", "og:description")
+    negative_patterns = BaseExtractor.negative_patterns + ("sorry, this page isn't available", "page isn't available")
 
     def build_dorks(self, username: str) -> list[str]:
         return [
@@ -37,27 +36,18 @@ class InstagramExtractor(BaseExtractor):
         return normalized
 
     async def extract_metadata(self, html: str) -> dict[str, object]:
-        soup = BeautifulSoup(html, "lxml")
-        hydration: str | None = None
-        for script in soup.find_all("script"):
-            if script.string and "profilePage_" in script.string:
-                match = re.search(r"window\._sharedData\s*=\s*({.*});", script.string)
-                if match:
-                    hydration = match.group(1)
-                    break
-            if script.string and "application/ld+json" in script.get("type", ""):
-                hydration = script.string
-                break
+        soup = tolerant_soup(html)
         user_data: dict = {}
-        if hydration:
+        for data in iter_json_blobs(html):
             try:
-                data = json.loads(hydration)
-                if "entry_data" in data and "ProfilePage" in data["entry_data"]:
+                if isinstance(data, dict) and "entry_data" in data and "ProfilePage" in data["entry_data"]:
                     user_data = data["entry_data"]["ProfilePage"][0]["graphql"]["user"]
-                elif data.get("@type") == "Person":
+                    break
+                if isinstance(data, dict) and data.get("@type") == "Person":
                     user_data = data
-            except (KeyError, TypeError, json.JSONDecodeError):
-                user_data = {}
+                    break
+            except (KeyError, TypeError, IndexError):
+                continue
         if user_data:
             metadata = {
                 "full_name": user_data.get("full_name", ""),
@@ -67,16 +57,17 @@ class InstagramExtractor(BaseExtractor):
             }
             metadata["lang_bio"] = detect_lang(str(metadata.get("bio", "")))
             return metadata
-        meta_tag = soup.find("meta", property="og:description")
-        metadata = {"bio": meta_tag.get("content", "") if meta_tag else ""}
+        metas = meta_map(html)
+        metadata = {"bio": metas.get("og:description", "") or metas.get("description", ""), "avatar_url": metas.get("og:image", "")}
         metadata["lang_bio"] = detect_lang(str(metadata["bio"]))
         return metadata
 
     def fingerprint(self, response, text: str) -> bool:
-        if response.status not in (200, 301, 302) or detect_challenge(text):
-            return False
-        soup = BeautifulSoup(text, "lxml")
-        return '"profilePage_' in text or '"graphql": {' in text or bool(soup.find("meta", {"property": "og:title"}))
+        return bool(self.heuristic_detect({"status": response.status, "html": text}).get("exists"))
 
     def confidence(self, metadata: dict[str, object]) -> int:
-        return 70 if metadata.get("bio") else 40
+        if metadata.get("confidence_score"):
+            return int(metadata["confidence_score"])
+        detection = metadata.get("_detection") if isinstance(metadata.get("_detection"), dict) else {}
+        base = int(detection.get("confidence") or 40)
+        return min(99, base + (10 if metadata.get("bio") else 0))

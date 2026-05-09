@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import re
+from pathlib import Path
 from typing import Any
 
 from rapidfuzz import fuzz
@@ -13,12 +15,11 @@ from shadowtrace.core.events import event_bus
 from shadowtrace.core.logger import console, logger
 from shadowtrace.core.models import ProfileResult, ScanTarget, TargetType
 from shadowtrace.core.rate_limit import rate_limiter
-from shadowtrace.core.session import HTTPSessionManager, random_stealth_headers, session_manager
+from shadowtrace.core.session import HTTPSessionManager, fetch_text, random_stealth_headers, session_manager
 from shadowtrace.modules.passive import PassiveIntelEngine
 from shadowtrace.core.plugins import discover_plugins
 from shadowtrace.modules.registry import MODULE_REGISTRY
 from shadowtrace.utils.fingerprint import extract_avatar_url, hash_avatar
-from shadowtrace.utils.retry import backoff_delay
 from shadowtrace.utils.validators import validate_username
 
 
@@ -109,6 +110,17 @@ class ShadowTraceEngine:
             logger.debug("avatar hash failed for %s: %s", url, exc)
             return None
 
+    async def dump_debug_html(self, site: str, username: str, html: str) -> None:
+        if not self.config.debug_html_dump or not html:
+            return
+        safe_site = re.sub(r"[^A-Za-z0-9_.-]+", "_", site)
+        safe_username = re.sub(r"[^A-Za-z0-9_.-]+", "_", username)
+        debug_dir = Path(self.config.debug_dir)
+        if not debug_dir.is_absolute():
+            debug_dir = Path.cwd() / debug_dir
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        (debug_dir / f"{safe_site}_{safe_username}.html").write_text(html, encoding="utf-8", errors="ignore")
+
     async def scan_single(self, username: str, site: str, url_template: str) -> dict[str, Any]:
         cached = await cache.get_profile(username, site)
         if cached and cached.get("status") == "FOUND" and cached.get("last_check"):
@@ -116,40 +128,45 @@ class ShadowTraceEngine:
         session = await self.http.get()
         extractor = MODULE_REGISTRY.module(site)
         target_url = url_template.format(username)
-        last_error: str | None = None
-        for attempt in range(self.config.max_retries + 1):
-            try:
-                await rate_limiter.wait(extractor.rate_limit_key or site)
-                await event_bus.emit("module.started", module=site, target=username, url=target_url)
-                async with session.get(target_url, headers=random_stealth_headers(self.config), allow_redirects=True) as response:
-                    text = await response.content.read(self.config.max_response_bytes)
-                    html = text.decode(response.charset or "utf-8", errors="ignore")
-                    found = extractor.fingerprint(response, html)
-                    metadata = await extractor.extract_metadata(html) if found else {}
-                    if found:
-                        metadata = await extractor.normalize(metadata, context={"engine": self, "url": target_url})
-                    avatar_url = extract_avatar_url(metadata)
-                    avatar_hash = await self.try_avatar_hash(avatar_url) if avatar_url else None
-                    result = ProfileResult(
-                        site=site,
-                        username=username,
-                        url=target_url,
-                        status="FOUND" if found else "NOT FOUND",
-                        metadata=metadata,
-                        avatar_hash=avatar_hash,
-                        confidence=extractor.confidence(metadata),
-                    )
-                    if found:
-                        await cache.set_profile(username, site, target_url, True, result.confidence, avatar_hash, metadata)
-                    payload = result.to_dict()
-                    await event_bus.emit("module.completed", module=site, target=username, result=payload)
-                    return payload
-            except asyncio.TimeoutError:
-                last_error = "timeout"
-            except Exception as exc:
-                last_error = str(exc)
-            if attempt < self.config.max_retries:
-                await asyncio.sleep(backoff_delay(attempt))
+        try:
+            await rate_limiter.wait(extractor.rate_limit_key or site)
+            await event_bus.emit("module.started", module=site, target=username, url=target_url)
+            raw = await fetch_text(session, target_url, self.config)
+            html = str(raw.get("html", ""))
+            await self.dump_debug_html(site, username, html)
+            detection = await extractor.detect(username, raw=raw, context={"engine": self, "url": target_url, "username": username})
+            found = bool(detection.get("exists"))
+            metadata: dict[str, Any] = {"_detection": detection}
+            if found:
+                try:
+                    extracted = await extractor.extract(username, html=html, raw=raw, context={"engine": self, "url": target_url, "username": username})
+                    metadata.update(extracted or {})
+                except Exception as exc:
+                    metadata["_extraction_error"] = str(exc)
+                metadata = await extractor.normalize(metadata, context={"engine": self, "url": target_url, "username": username})
+                metadata = await extractor.enrich(metadata, context={"engine": self, "url": target_url, "username": username})
+            avatar_url = extract_avatar_url(metadata)
+            avatar_hash = await self.try_avatar_hash(avatar_url) if avatar_url else None
+            confidence = extractor.confidence(metadata)
+            result = ProfileResult(
+                site=site,
+                username=username,
+                url=str(raw.get("final_url") or target_url),
+                status="FOUND" if found else "NOT FOUND",
+                metadata=metadata,
+                avatar_hash=avatar_hash,
+                confidence=confidence,
+                error=raw.get("error"),
+            )
+            if found:
+                await cache.set_profile(username, site, target_url, True, result.confidence, avatar_hash, metadata)
+            payload = result.to_dict()
+            await event_bus.emit("module.completed", module=site, target=username, result=payload)
+            return payload
+        except asyncio.TimeoutError:
+            last_error = "timeout"
+        except Exception as exc:
+            last_error = str(exc)
         result = ProfileResult(site, username, target_url, "ERROR", error=last_error).to_dict()
         await event_bus.emit("module.failed", module=site, target=username, error=last_error)
         return result

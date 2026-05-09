@@ -26,6 +26,8 @@ class ShadowTraceConfig:
     module_rate_limits_sec: dict[str, float] = field(default_factory=dict)
     plugin_paths: list[str] = field(default_factory=lambda: ["plugins"])
     max_response_bytes: int = 2_000_000
+    debug_html_dump: bool = False
+    debug_dir: str = "debug"
     user_agents: list[str] = field(default_factory=lambda: [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121 Safari/537.36",
