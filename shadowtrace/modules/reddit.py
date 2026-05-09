@@ -4,13 +4,26 @@ import re
 
 from bs4 import BeautifulSoup
 
+from shadowtrace.core.models import ModuleCapability, ModuleKind, ModulePriority
 from shadowtrace.modules.base import BaseExtractor
 from shadowtrace.utils.parser import detect_challenge
 
 
 class RedditExtractor(BaseExtractor):
+    name = "Reddit"
     site_name = "Reddit"
+    description = "Reddit public activity, subreddit and behavior-pattern intelligence"
+    capabilities = (ModuleCapability.SOCIAL_SCRAPING, ModuleCapability.PLATFORM_ENUMERATION, ModuleCapability.PROFILE_CORRELATION, ModuleCapability.TIMELINE_GENERATION)
+    kind = ModuleKind.HYBRID
+    priority = ModulePriority.HIGH
     url_patterns = ("reddit.com",)
+
+    async def normalize(self, parsed: dict[str, object], context: object | None = None) -> dict[str, object]:
+        normalized = dict(parsed)
+        bio = str(normalized.get("bio", ""))
+        normalized["mentioned_subreddits"] = re.findall(r"r/[A-Za-z0-9_]+", bio)
+        normalized["intelligence_surface"] = ["subreddits", "comments", "karma", "language", "temporal_activity"]
+        return normalized
 
     async def extract_metadata(self, html: str) -> dict[str, str]:
         soup = BeautifulSoup(html, "lxml")

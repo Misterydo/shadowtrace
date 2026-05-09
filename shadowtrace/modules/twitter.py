@@ -4,13 +4,27 @@ import re
 
 from bs4 import BeautifulSoup
 
+from shadowtrace.core.models import ModuleCapability, ModuleKind, ModulePriority
 from shadowtrace.modules.base import BaseExtractor
 from shadowtrace.utils.parser import detect_challenge
 
 
 class TwitterExtractor(BaseExtractor):
+    name = "Twitter"
     site_name = "Twitter"
+    description = "X/Twitter public profile, reply/timestamp and URL exposure intelligence"
+    capabilities = (ModuleCapability.SOCIAL_SCRAPING, ModuleCapability.PLATFORM_ENUMERATION, ModuleCapability.PROFILE_CORRELATION, ModuleCapability.TIMELINE_GENERATION)
+    kind = ModuleKind.HYBRID
+    priority = ModulePriority.HIGH
     url_patterns = ("twitter.com", "x.com")
+
+    async def normalize(self, parsed: dict[str, object], context: object | None = None) -> dict[str, object]:
+        normalized = dict(parsed)
+        description = str(normalized.get("description", ""))
+        normalized["shared_urls"] = re.findall(r"https?://[^\s)]+", description)
+        normalized["mentions"] = re.findall(r"@[\w.]+", description)
+        normalized["intelligence_surface"] = ["public_tweets", "replies", "timestamps", "shared_urls", "internal_ids"]
+        return normalized
 
     async def extract_metadata(self, html: str) -> dict[str, str]:
         soup = BeautifulSoup(html, "lxml")

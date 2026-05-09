@@ -1,14 +1,30 @@
 from __future__ import annotations
 
+import re
+
 from bs4 import BeautifulSoup
 
+from shadowtrace.core.models import ModuleCapability, ModuleKind, ModulePriority
 from shadowtrace.modules.base import BaseExtractor
 from shadowtrace.utils.parser import detect_lang
 
 
 class GitHubExtractor(BaseExtractor):
+    name = "GitHub"
     site_name = "GitHub"
+    description = "GitHub developer, repository, organization and commit-fingerprint intelligence"
+    capabilities = (ModuleCapability.GITHUB_INTELLIGENCE, ModuleCapability.PLATFORM_ENUMERATION, ModuleCapability.PROFILE_CORRELATION, ModuleCapability.METADATA_EXTRACTION)
+    kind = ModuleKind.HYBRID
+    priority = ModulePriority.HIGH
     url_patterns = ("github.com",)
+
+    async def normalize(self, parsed: dict[str, object], context: object | None = None) -> dict[str, object]:
+        normalized = dict(parsed)
+        bio = str(normalized.get("bio", ""))
+        normalized["emails"] = re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", bio)
+        normalized["technologies"] = re.findall(r"\b(?:python|go|rust|javascript|typescript|java|kotlin|swift|php|ruby)\b", bio, re.I)
+        normalized["intelligence_surface"] = ["commits", "emails", "organizations", "repositories", "forks", "timestamps"]
+        return normalized
 
     async def extract_metadata(self, html: str) -> dict[str, object]:
         soup = BeautifulSoup(html, "lxml")

@@ -9,12 +9,14 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeEl
 from shadowtrace.core.async_manager import async_manager
 from shadowtrace.core.cache import cache
 from shadowtrace.core.config import CONFIG, ShadowTraceConfig
+from shadowtrace.core.events import event_bus
 from shadowtrace.core.logger import console, logger
-from shadowtrace.core.models import ProfileResult
+from shadowtrace.core.models import ProfileResult, ScanTarget, TargetType
+from shadowtrace.core.rate_limit import rate_limiter
 from shadowtrace.core.session import HTTPSessionManager, random_stealth_headers, session_manager
 from shadowtrace.modules.passive import PassiveIntelEngine
 from shadowtrace.core.plugins import discover_plugins
-from shadowtrace.modules.registry import EXTRACTORS, SITES
+from shadowtrace.modules.registry import MODULE_REGISTRY
 from shadowtrace.utils.fingerprint import extract_avatar_url, hash_avatar
 from shadowtrace.utils.retry import backoff_delay
 from shadowtrace.utils.validators import validate_username
@@ -83,8 +85,12 @@ class ShadowTraceEngine:
         self.http = http
 
     async def initialize(self) -> None:
-        discover_plugins()
+        discover_plugins(self.config.plugin_paths)
+        rate_limiter.global_interval = self.config.global_rate_limit_sec
+        for key, interval in self.config.module_rate_limits_sec.items():
+            rate_limiter.configure(key, interval)
         await cache.init()
+        await event_bus.emit("engine.initialized", modules=MODULE_REGISTRY.describe())
 
     async def close(self) -> None:
         await self.http.close()
@@ -108,16 +114,20 @@ class ShadowTraceEngine:
         if cached and cached.get("status") == "FOUND" and cached.get("last_check"):
             return cached
         session = await self.http.get()
-        extractor = EXTRACTORS[site]
+        extractor = MODULE_REGISTRY.module(site)
         target_url = url_template.format(username)
         last_error: str | None = None
         for attempt in range(self.config.max_retries + 1):
             try:
+                await rate_limiter.wait(extractor.rate_limit_key or site)
+                await event_bus.emit("module.started", module=site, target=username, url=target_url)
                 async with session.get(target_url, headers=random_stealth_headers(self.config), allow_redirects=True) as response:
                     text = await response.content.read(self.config.max_response_bytes)
                     html = text.decode(response.charset or "utf-8", errors="ignore")
                     found = extractor.fingerprint(response, html)
                     metadata = await extractor.extract_metadata(html) if found else {}
+                    if found:
+                        metadata = await extractor.normalize(metadata, context={"engine": self, "url": target_url})
                     avatar_url = extract_avatar_url(metadata)
                     avatar_hash = await self.try_avatar_hash(avatar_url) if avatar_url else None
                     result = ProfileResult(
@@ -131,19 +141,23 @@ class ShadowTraceEngine:
                     )
                     if found:
                         await cache.set_profile(username, site, target_url, True, result.confidence, avatar_hash, metadata)
-                    return result.to_dict()
+                    payload = result.to_dict()
+                    await event_bus.emit("module.completed", module=site, target=username, result=payload)
+                    return payload
             except asyncio.TimeoutError:
                 last_error = "timeout"
             except Exception as exc:
                 last_error = str(exc)
             if attempt < self.config.max_retries:
                 await asyncio.sleep(backoff_delay(attempt))
-        return ProfileResult(site, username, target_url, "ERROR", error=last_error).to_dict()
+        result = ProfileResult(site, username, target_url, "ERROR", error=last_error).to_dict()
+        await event_bus.emit("module.failed", module=site, target=username, error=last_error)
+        return result
 
     async def scan_username(self, username: str, mode: str = "single", passive: bool = False) -> tuple[list[dict], list[dict]]:
         clean_username = validate_username(username)
         variants = [clean_username] if mode == "single" else smart_username_variants(clean_username)
-        coroutines = [self.scan_single(candidate, site, url_template) for candidate in variants for site, url_template in SITES.items()]
+        coroutines = [self.scan_single(candidate, site, url_template) for candidate in variants for site, url_template, _module in MODULE_REGISTRY.items()]
         profiles: list[dict] = []
         with Progress(
             SpinnerColumn(),
@@ -167,7 +181,22 @@ class ShadowTraceEngine:
             PassiveIntelEngine.rich_show(passive_results)
             for profile in profiles:
                 profile["metadata"] = PassiveIntelEngine.enrich_metadata(profile.get("metadata", {}), passive_results)
+        await event_bus.emit("scan.completed", target=clean_username, profiles=profiles, passive=passive_results)
         return [profile for profile in profiles if profile], passive_results
+
+    async def run_modules_for_target(self, target_value: str, target_type: TargetType = TargetType.USERNAME) -> list[dict[str, Any]]:
+        """Run decoupled modules by declared target type for future API/UI workers."""
+
+        target = ScanTarget(target_value, target_type)
+        shared_results: list[dict[str, Any]] = []
+        for module in MODULE_REGISTRY.modules_for_target(target_type):
+            await rate_limiter.wait(module.rate_limit_key or module.module_name)
+            await event_bus.emit("module.pipeline.started", module=module.module_name, target=target.to_dict())
+            result = await module.run(target, shared_results=shared_results, context={"engine": self})
+            payload = result.to_dict()
+            shared_results.append(payload)
+            await event_bus.emit("module.pipeline.completed", module=module.module_name, result=payload)
+        return shared_results
 
 
 engine = ShadowTraceEngine()

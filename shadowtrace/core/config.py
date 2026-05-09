@@ -22,6 +22,9 @@ class ShadowTraceConfig:
     sem_delay_ms: tuple[int, int] = (300, 2000)
     passive_ttl_hours: int = 24
     passive_rate_limit_sec: float = 5.0
+    global_rate_limit_sec: float = 0.0
+    module_rate_limits_sec: dict[str, float] = field(default_factory=dict)
+    plugin_paths: list[str] = field(default_factory=lambda: ["plugins"])
     max_response_bytes: int = 2_000_000
     user_agents: list[str] = field(default_factory=lambda: [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121 Safari/537.36",

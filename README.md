@@ -6,14 +6,15 @@ ShadowTrace is a modular OSINT username investigation toolkit for Linux-friendly
 
 ## Features
 
-- Modular extractors for GitHub, Instagram, X/Twitter, and Reddit.
+- Modular extractors for GitHub, Instagram, X/Twitter, and Reddit with a standard module lifecycle (`validate`, `collect`, `parse`, `normalize`, `enrich`, `correlate`, `run`).
 - Passive intelligence mode using Bing dorks with SQLite TTL cache.
 - Centralized configuration in `shadowtrace_config.json`.
 - Shared async `aiohttp` session manager with redirect support, timeouts, retry/backoff, realistic rotating headers, and response-size limits.
 - SQLite cache with WAL mode for discovered profiles, timeline entries, avatar hashes, and passive search results.
 - JSON, CSV, HTML, and GraphML exports.
 - Rich terminal UI with colored logs and progress bars.
-- Extension registry for future plugins/modules.
+- Runtime module registry and plugin discovery that can load new modules without changing the core engine.
+- Async event hooks, global/per-module rate limiting, target typing, module priorities, standardized artifacts, risk scores, and correlation-ready outputs.
 - Optional Tor/proxy-ready configuration.
 
 ## Project layout
@@ -98,23 +99,48 @@ The first run creates `shadowtrace_config.json` with defaults:
 
 Set `tor` to `true` to route through `socks5://127.0.0.1:9050`, or provide proxy URLs in `proxy_list`. SOCKS proxies require `aiohttp-socks`.
 
-## Adding a new module
+## Architecture for large-scale OSINT expansion
 
-1. Create a new extractor in `shadowtrace/modules/<platform>.py` inheriting from `BaseExtractor`.
-2. Implement `extract_metadata`, `fingerprint`, and optionally `confidence`.
-3. Register it in `shadowtrace/modules/registry.py` with a URL template.
+ShadowTrace is now prepared to evolve beyond username lookup into a professional modular OSINT framework. The core model supports target types such as usernames, emails, phones, domains, URLs, IOCs, cryptocurrency wallets, documents, images, and social profiles. Modules declare capabilities such as social scraping, GitHub intelligence, metadata extraction, breach analysis, DNS/WHOIS/subdomain enumeration, URL intelligence, reputation analysis, risk scoring, timeline generation, and profile correlation.
 
-Minimal extractor skeleton:
+The engine is intentionally decoupled from module internals:
+
+- `ModuleRegistry` stores built-in and plugin modules at runtime.
+- `BaseExtractor` defines the lifecycle: `validate()`, `collect()`, `parse()`, `normalize()`, `enrich()`, `correlate()`, and `run()`.
+- `ModuleResult` and `IntelligenceArtifact` provide standardized outputs for future REST APIs, web UI, databases, queues, and distributed workers.
+- `EventBus` exposes hooks such as `engine.initialized`, `module.started`, `module.completed`, `module.failed`, and pipeline events for integrations.
+- `AsyncRateLimiter` supports global and per-module rate limits.
+- Module priorities allow future queue/worker execution plans to run high-value modules first.
+
+Platform modules can implement custom logic for their specific public exposure model instead of only checking existence. For example, Instagram can normalize hashtags, mentions, external links and dorks; X/Twitter can focus on tweets, replies, timestamps and shared URLs; Reddit can model subreddits, karma and temporal behavior; GitHub can model commits, leaked commit emails, organizations, repositories and development fingerprints.
+
+## Adding a new module or plugin
+
+1. Create a module inheriting from `BaseExtractor`.
+2. Declare `name`, `description`, `target_types`, `capabilities`, `kind`, and `priority`.
+3. Implement the lifecycle methods needed by that module. Simple modules can implement only `extract_metadata()` and `fingerprint()`; advanced modules can add custom collectors, parsers, normalizers, enrichers and correlators.
+4. Place plugin files in a configured `plugin_paths` directory and expose `MODULE`, `MODULES`, or legacy `EXTRACTOR`. The core engine will discover them at startup.
+
+Minimal plugin skeleton:
 
 ```python
+from shadowtrace.core.models import ModuleCapability, ModuleKind, ModulePriority, TargetType
 from shadowtrace.modules.base import BaseExtractor
 
-class ExampleExtractor(BaseExtractor):
-    site_name = "Example"
+class ExampleModule(BaseExtractor):
+    name = "Example"
+    description = "Example platform intelligence"
+    target_types = (TargetType.USERNAME,)
+    capabilities = (ModuleCapability.USERNAME_LOOKUP, ModuleCapability.SOCIAL_SCRAPING)
+    kind = ModuleKind.PASSIVE
+    priority = ModulePriority.NORMAL
     url_patterns = ("example.com",)
+    url_template = "https://example.com/{}"
 
     async def extract_metadata(self, html: str) -> dict[str, object]:
         return {}
+
+MODULE = ExampleModule()
 ```
 
 ## Security and stability notes
@@ -126,7 +152,7 @@ class ExampleExtractor(BaseExtractor):
 
 ## Roadmap / TODO
 
-- Formal plugin discovery from a `plugins/` directory.
+- API REST and web UI backed by standardized module results.
 - Optional encrypted profiles and per-investigation workspaces.
 - Smarter adaptive rate limiting per host and per HTTP status.
 - Pluggable cache backends beyond SQLite.
