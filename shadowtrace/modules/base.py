@@ -14,6 +14,7 @@ from shadowtrace.core.models import (
     ModuleResult,
     ScanTarget,
     TargetType,
+    UniversalProfile,
 )
 from shadowtrace.utils.parser import canonical_url, detect_challenge, meta_map, title_text
 
@@ -72,8 +73,8 @@ class BaseExtractor(ABC):
         session = await engine.http.get()
         return await fetch_text(session, self.profile_url(str(target.value)), engine.config)
 
-    async def detect(self, username: str, raw: dict[str, Any] | None = None, context: Any | None = None) -> dict[str, Any]:
-        """Layer 1: decide probable existence from tolerant response heuristics only."""
+    async def check_exists(self, username: str, raw: dict[str, Any] | None = None, context: Any | None = None) -> dict[str, Any]:
+        """Phase 1: fast existence check based on status, redirects and page fingerprints."""
 
         if raw is None:
             engine = context.get("engine") if isinstance(context, dict) else None
@@ -86,14 +87,19 @@ class BaseExtractor(ABC):
                 raw = await fetch_text(session, self.profile_url(username), engine.config)
         return self.heuristic_detect(raw or {}, username)
 
-    async def extract(
+    async def detect(self, username: str, raw: dict[str, Any] | None = None, context: Any | None = None) -> dict[str, Any]:
+        """Backward-compatible alias for Phase 1 existence detection."""
+
+        return await self.check_exists(username, raw=raw, context=context)
+
+    async def extract_basic(
         self,
         username: str,
         html: str | None = None,
         raw: dict[str, Any] | None = None,
         context: Any | None = None,
     ) -> dict[str, Any]:
-        """Layer 2: best-effort metadata extraction, isolated from detection."""
+        """Phase 2: basic HTML/embedded-JSON extraction without browser automation."""
 
         if html is None:
             if raw is None:
@@ -107,6 +113,31 @@ class BaseExtractor(ABC):
                     raw = await fetch_text(session, self.profile_url(username), engine.config)
             html = str((raw or {}).get("html", ""))
         return await self.extract_metadata(html or "")
+
+    async def extract_advanced(
+        self,
+        username: str,
+        raw: dict[str, Any] | None = None,
+        context: Any | None = None,
+    ) -> dict[str, Any]:
+        """Phase 3: optional dynamic/API/browser enrichment hook. Disabled by default."""
+
+        return {}
+
+    async def extract(
+        self,
+        username: str,
+        html: str | None = None,
+        raw: dict[str, Any] | None = None,
+        context: Any | None = None,
+    ) -> dict[str, Any]:
+        """Layer 2: best-effort metadata extraction, isolated from detection."""
+
+        basic = await self.extract_basic(username, html=html, raw=raw, context=context)
+        advanced = await self.extract_advanced(username, raw=raw, context=context)
+        merged = dict(basic or {})
+        merged.update({key: value for key, value in (advanced or {}).items() if value not in (None, "", [], {})})
+        return merged
 
     def heuristic_detect(self, raw: dict[str, Any], username: str = "") -> dict[str, Any]:
         html = str(raw.get("html") or "")
@@ -204,6 +235,18 @@ class BaseExtractor(ABC):
     async def normalize(self, parsed: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
         return parsed
 
+    def normalize_profile(self, normalized: dict[str, Any], username: str = "") -> UniversalProfile:
+        detection = normalized.get("_detection") if isinstance(normalized.get("_detection"), dict) else {}
+        exists = bool(detection.get("exists"))
+        confidence = int(normalized.get("confidence_score") or detection.get("confidence") or self.confidence(normalized))
+        return UniversalProfile.from_metadata(
+            platform=self.module_name.lower(),
+            username=username,
+            exists=exists,
+            metadata=normalized,
+            confidence=confidence,
+        )
+
     async def enrich(
         self,
         normalized: dict[str, Any],
@@ -253,6 +296,8 @@ class BaseExtractor(ABC):
             normalized = await self.normalize(parsed, context=context_data)
             enriched = await self.enrich(normalized, shared_results=shared_results, context=context_data)
             correlations = await self.correlate(enriched, shared_results=shared_results, context=context_data)
+            universal_profile = self.normalize_profile(enriched, str(target.value))
+            enriched["universal_profile"] = universal_profile.to_dict()
             artifacts = self.to_artifacts(enriched)
             confidence = self.confidence(enriched)
             exists = bool(enriched.get("_detection", {}).get("exists")) if isinstance(enriched.get("_detection"), dict) else bool(enriched)
@@ -293,7 +338,7 @@ class BaseExtractor(ABC):
             "capabilities": [capability.value for capability in self.capabilities],
             "kind": self.kind.value,
             "priority": int(self.priority),
-            "pipeline": ["detect", "extract", "enrich"],
+            "pipeline": ["check_exists", "extract_basic", "extract_advanced", "normalize", "enrich"],
         }
 
     @abstractmethod
@@ -319,3 +364,14 @@ class BaseExtractor(ABC):
     def fingerprint(self, response: aiohttp.ClientResponse, text: str) -> bool:
         raw = {"status": response.status, "charset": getattr(response, "charset", None), "html": text, "content_length": len(text)}
         return bool(self.heuristic_detect(raw).get("exists"))
+
+
+class PlatformModule(BaseExtractor):
+    """Semantic base class for universal platform modules.
+
+    New platform integrations should inherit from this name and implement the
+    four-phase contract: check_exists(), extract_basic(), extract_advanced(),
+    and normalize(). Existing extractors keep working through BaseExtractor.
+    """
+
+    pass

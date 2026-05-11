@@ -109,6 +109,83 @@ class ModuleResult:
 
 
 @dataclass(slots=True)
+class UniversalProfile:
+    """Platform-neutral representation of a digital identity.
+
+    Every platform module should be able to emit this shape, even when many
+    fields are unknown. Keeping the schema stable prevents platform-specific
+    scraping details from leaking into correlation, scoring, cache and output
+    layers.
+    """
+
+    platform: str
+    exists: bool
+    username: str
+    display_name: str | None = None
+    bio: str | None = None
+    avatar: str | None = None
+    followers: int | None = None
+    following: int | None = None
+    posts: int | None = None
+    verified: bool | None = None
+    external_links: list[str] = field(default_factory=list)
+    confidence: int = 0
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_metadata(
+        cls,
+        *,
+        platform: str,
+        username: str,
+        exists: bool,
+        metadata: dict[str, Any] | None = None,
+        confidence: int = 0,
+    ) -> "UniversalProfile":
+        metadata = metadata or {}
+        links = metadata.get("external_links") or metadata.get("links") or []
+        if isinstance(links, str):
+            links = [links]
+        return cls(
+            platform=platform,
+            exists=exists,
+            username=username,
+            display_name=metadata.get("display_name") or metadata.get("full_name") or metadata.get("name"),
+            bio=metadata.get("bio") or metadata.get("description"),
+            avatar=metadata.get("avatar") or metadata.get("avatar_url") or metadata.get("profile_pic") or metadata.get("og_image"),
+            followers=_coerce_int(metadata.get("followers") or metadata.get("followers_count")),
+            following=_coerce_int(metadata.get("following") or metadata.get("following_count")),
+            posts=_coerce_int(metadata.get("posts") or metadata.get("post_count") or metadata.get("statuses_count")),
+            verified=_coerce_bool(metadata.get("verified")),
+            external_links=[str(link) for link in links if link],
+            confidence=max(0, min(100, int(confidence or metadata.get("confidence_score") or 0))),
+            raw=dict(metadata),
+        )
+
+
+def _coerce_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    try:
+        return int(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_bool(value: Any) -> bool | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "verified"}
+
+
+@dataclass(slots=True)
 class ProfileResult:
     site: str
     username: str
