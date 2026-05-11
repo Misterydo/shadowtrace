@@ -14,7 +14,7 @@ ShadowTrace is a modular OSINT username investigation toolkit for Linux-friendly
 - JSON, CSV, HTML, and GraphML exports.
 - Rich terminal UI with colored logs and progress bars.
 - Runtime module registry and plugin discovery that can load new modules without changing the core engine.
-- Async event hooks, global/per-module rate limiting, target typing, module priorities, standardized artifacts, risk scores, and correlation-ready outputs.
+- Async event hooks, global/per-module rate limiting, target typing, module priorities, standardized artifacts, universal platform profiles, risk scores, and correlation-ready outputs.
 - Optional Tor/proxy-ready configuration.
 
 ## Project layout
@@ -106,7 +106,8 @@ ShadowTrace is now prepared to evolve beyond username lookup into a professional
 The engine is intentionally decoupled from module internals:
 
 - `ModuleRegistry` stores built-in and plugin modules at runtime.
-- `BaseExtractor` defines the lifecycle: `validate()`, `collect()`, `parse()`, `normalize()`, `enrich()`, `correlate()`, and `run()`.
+- `BaseExtractor`/`PlatformModule` define a phased lifecycle: `check_exists()`, `extract_basic()`, `extract_advanced()`, `normalize()`, `enrich()`, `correlate()`, and `run()`.
+- `UniversalProfile` keeps every platform on the same schema: platform, existence, username, display name, bio, avatar, followers/following/posts, verification, external links, confidence, and raw metadata.
 - `ModuleResult` and `IntelligenceArtifact` provide standardized outputs for future REST APIs, web UI, databases, queues, and distributed workers.
 - `EventBus` exposes hooks such as `engine.initialized`, `module.started`, `module.completed`, `module.failed`, and pipeline events for integrations.
 - `AsyncRateLimiter` supports global and per-module rate limits.
@@ -159,6 +160,7 @@ MODULE = ExampleModule()
 - Optional Tor health checks and proxy scoring.
 - Unit tests with recorded HTTP fixtures.
 - More platform modules and verified API integrations where permitted.
+- Avatar hash, semantic bio, external-link and username-variant enrichers feeding the universal correlation score.
 
 ## License
 

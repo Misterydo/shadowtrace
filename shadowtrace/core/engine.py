@@ -15,6 +15,7 @@ from shadowtrace.core.events import event_bus
 from shadowtrace.core.logger import console, logger
 from shadowtrace.core.models import ProfileResult, ScanTarget, TargetType
 from shadowtrace.core.rate_limit import rate_limiter
+from shadowtrace.enrichers.username_variants import generate_username_variants
 from shadowtrace.core.session import HTTPSessionManager, fetch_text, random_stealth_headers, session_manager
 from shadowtrace.modules.passive import PassiveIntelEngine
 from shadowtrace.core.plugins import discover_plugins
@@ -24,28 +25,9 @@ from shadowtrace.utils.validators import validate_username
 
 
 def smart_username_variants(username: str) -> list[str]:
-    variants = {
-        username,
-        f"{username}123",
-        f"{username}_",
-        f"_{username}",
-        username.replace("a", "4").replace("o", "0"),
-        f"{username}.dev",
-        f"{username}1",
-        username.lower(),
-        username.upper(),
-        f"real{username}",
-        f"the{username}",
-        username[::-1],
-        f"{username}98",
-        f"{username}99",
-        f"{username}2000",
-        f"{username}2020",
-    }
-    import re
-    variants.add(re.sub(r"[aeio]", "x", username))
-    variants.add(username.replace("e", "3"))
-    return list(variants)[:12]
+    """Backward-compatible wrapper around the username mutation enricher."""
+
+    return generate_username_variants(username, limit=12)
 
 
 def correlation_score(profile_list: list[dict[str, Any]]) -> int:
